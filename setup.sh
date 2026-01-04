@@ -4,7 +4,6 @@ set -euo pipefail
 # GitHub Actions Runner Controller (ARC) deployment on k3d
 # Idempotent setup script - safe to run multiple times
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_USER="github-runner"
 RUNNER_HOME="/srv/docker/github-runner"
 K3D_CLUSTER_NAME="${K3D_CLUSTER_NAME:-arc-cluster}"

@@ -1,4 +1,4 @@
-name: Test Runner
+name: CI
 
 on:
   push:
@@ -8,7 +8,65 @@ on:
   workflow_dispatch:
 
 jobs:
-  test:
+  lint:
+    runs-on: plasma-runner
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: |
+          if ! command -v shellcheck &>/dev/null; then
+            apt-get update && apt-get install -y shellcheck
+          fi
+
+      - name: Shellcheck setup.sh
+        run: shellcheck -x setup.sh
+
+      - name: Shellcheck teardown.sh
+        run: shellcheck -x teardown.sh
+
+      - name: Verify scripts are executable
+        run: |
+          test -x setup.sh || exit 1
+          test -x teardown.sh || exit 1
+
+  unit-tests:
+    runs-on: plasma-runner
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test setup.sh usage
+        run: |
+          ./setup.sh 2>&1 | grep -q "Usage:" || exit 1
+          echo "Usage help OK"
+
+      - name: Test teardown.sh help
+        run: |
+          ./teardown.sh --help 2>&1 | grep -q "Usage:" || exit 1
+          echo "Help OK"
+
+      - name: Test teardown.sh idempotency (no cluster)
+        run: |
+          # Should succeed even with no cluster
+          ./teardown.sh --keep-user 2>&1 | tee /tmp/teardown.log
+          grep -q "Teardown complete" /tmp/teardown.log || exit 1
+          echo "Idempotent teardown OK"
+
+      - name: Test config parsing
+        run: |
+          cp config.env.example /tmp/test-config.env
+          echo "GITHUB_APP_ID=123" >> /tmp/test-config.env
+          echo "GITHUB_APP_INSTALLATION_ID=456" >> /tmp/test-config.env
+          echo "GITHUB_APP_PRIVATE_KEY_PATH=/nonexistent.pem" >> /tmp/test-config.env
+          # Should fail on missing PEM file
+          if ./setup.sh /tmp/test-config.env 2>&1 | grep -q "Private key file not found"; then
+            echo "Config validation OK"
+          else
+            echo "Config validation failed"
+            exit 1
+          fi
+
+  integration-test:
     runs-on: plasma-runner
     steps:
       - uses: actions/checkout@v4
@@ -16,14 +74,114 @@ jobs:
       - name: System info
         run: |
           echo "Runner: $RUNNER_NAME"
-          echo "OS: $(uname -a)"
-          hostname
-          whoami
-          pwd
+          uname -a
+          docker --version
+          cat /etc/os-release | head -5
 
-      - name: Test docker
+      - name: Install dependencies
         run: |
-          docker --version || echo "Docker not available"
+          apt-get update
+          apt-get install -y curl
 
-      - name: List files
-        run: ls -la
+      - name: Install k3d
+        run: |
+          if ! command -v k3d &>/dev/null; then
+            curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+          fi
+          k3d --version
+
+      - name: Install kubectl
+        run: |
+          if ! command -v kubectl &>/dev/null; then
+            curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+            install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+            rm kubectl
+          fi
+          kubectl version --client
+
+      - name: Install helm
+        run: |
+          if ! command -v helm &>/dev/null; then
+            curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          fi
+          helm version --short
+
+      - name: Create test k3d cluster
+        run: |
+          export K3D_CLUSTER_NAME=test-cluster
+          k3d cluster create $K3D_CLUSTER_NAME \
+            --agents 1 \
+            --k3s-arg "--disable=traefik@server:0" \
+            --wait
+          k3d kubeconfig merge $K3D_CLUSTER_NAME --kubeconfig-merge-default
+          kubectl config use-context k3d-$K3D_CLUSTER_NAME
+
+      - name: Wait for cluster ready
+        run: |
+          kubectl wait --for=condition=Ready nodes --all --timeout=120s
+          kubectl get nodes
+
+      - name: Deploy ARC controller
+        run: |
+          helm install arc \
+            --namespace arc-systems \
+            --create-namespace \
+            oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set-controller \
+            --wait
+
+      - name: Verify ARC controller
+        run: |
+          kubectl get pods -n arc-systems
+          kubectl wait --for=condition=Ready pods --all -n arc-systems --timeout=120s
+
+      - name: Test teardown (ARC only, keep cluster)
+        run: |
+          export K3D_CLUSTER_NAME=test-cluster
+          ./teardown.sh --keep-cluster --keep-user 2>&1 | tee /tmp/teardown1.log
+          grep -q "ARC controller removed" /tmp/teardown1.log
+          # Cluster should still exist
+          k3d cluster list | grep -q test-cluster
+
+      - name: Verify ARC removed
+        run: |
+          ! kubectl get namespace arc-systems 2>/dev/null || exit 1
+          echo "ARC namespace removed OK"
+
+      - name: Re-deploy ARC (idempotency test)
+        run: |
+          helm install arc \
+            --namespace arc-systems \
+            --create-namespace \
+            oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set-controller \
+            --wait
+          kubectl get pods -n arc-systems
+
+      - name: Full teardown
+        run: |
+          export K3D_CLUSTER_NAME=test-cluster
+          ./teardown.sh --keep-user 2>&1 | tee /tmp/teardown2.log
+          grep -q "Teardown complete" /tmp/teardown2.log
+
+      - name: Verify full teardown
+        run: |
+          # Cluster should be gone
+          if k3d cluster list 2>/dev/null | grep -q test-cluster; then
+            echo "Cluster still exists!"
+            exit 1
+          fi
+          echo "Full teardown OK"
+
+      - name: Final idempotency check
+        run: |
+          export K3D_CLUSTER_NAME=test-cluster
+          ./teardown.sh --keep-user 2>&1 | tee /tmp/teardown3.log
+          grep -q "Cluster test-cluster does not exist" /tmp/teardown3.log
+          grep -q "Teardown complete" /tmp/teardown3.log
+          echo "Idempotent re-teardown OK"
+
+  summary:
+    runs-on: plasma-runner
+    needs: [lint, unit-tests, integration-test]
+    steps:
+      - name: All tests passed
+        run: echo "All tests passed successfully"
