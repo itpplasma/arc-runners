@@ -16,7 +16,7 @@ jobs:
       - name: Install shellcheck
         run: |
           if ! command -v shellcheck &>/dev/null; then
-            apt-get update && apt-get install -y shellcheck
+            sudo apt-get update && sudo apt-get install -y shellcheck
           fi
 
       - name: Shellcheck setup.sh
@@ -52,17 +52,13 @@ jobs:
           grep -q "Teardown complete" /tmp/teardown.log || exit 1
           echo "Idempotent teardown OK"
 
-      - name: Test config parsing
+      - name: Test config file missing
         run: |
-          cp config.env.example /tmp/test-config.env
-          echo "GITHUB_APP_ID=123" >> /tmp/test-config.env
-          echo "GITHUB_APP_INSTALLATION_ID=456" >> /tmp/test-config.env
-          echo "GITHUB_APP_PRIVATE_KEY_PATH=/nonexistent.pem" >> /tmp/test-config.env
-          # Should fail on missing PEM file
-          if ./setup.sh /tmp/test-config.env 2>&1 | grep -q "Private key file not found"; then
-            echo "Config validation OK"
+          # Should fail on missing config file
+          if ./setup.sh /nonexistent/config.env 2>&1 | grep -q "Config file not found"; then
+            echo "Missing config validation OK"
           else
-            echo "Config validation failed"
+            echo "Missing config validation failed"
             exit 1
           fi
 
@@ -78,15 +74,10 @@ jobs:
           docker --version
           cat /etc/os-release | head -5
 
-      - name: Install dependencies
-        run: |
-          apt-get update
-          apt-get install -y curl
-
       - name: Install k3d
         run: |
           if ! command -v k3d &>/dev/null; then
-            curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+            curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | sudo bash
           fi
           k3d --version
 
@@ -94,7 +85,7 @@ jobs:
         run: |
           if ! command -v kubectl &>/dev/null; then
             curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-            install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+            sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
             rm kubectl
           fi
           kubectl version --client
@@ -102,7 +93,7 @@ jobs:
       - name: Install helm
         run: |
           if ! command -v helm &>/dev/null; then
-            curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+            curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | sudo bash
           fi
           helm version --short
 
@@ -144,7 +135,10 @@ jobs:
 
       - name: Verify ARC removed
         run: |
-          ! kubectl get namespace arc-systems 2>/dev/null || exit 1
+          if kubectl get namespace arc-systems 2>/dev/null; then
+            echo "ARC namespace still exists!"
+            exit 1
+          fi
           echo "ARC namespace removed OK"
 
       - name: Re-deploy ARC (idempotency test)
@@ -184,4 +178,4 @@ jobs:
     needs: [lint, unit-tests, integration-test]
     steps:
       - name: All tests passed
-        run: echo "All tests passed successfully"
+        run: echo "All CI tests passed successfully"
