@@ -9,6 +9,8 @@ RUNNER_HOME="/srv/docker/github-runner"
 K3D_CLUSTER_NAME="${K3D_CLUSTER_NAME:-arc-cluster}"
 ENABLE_CACHE_PROXY="${ENABLE_CACHE_PROXY:-true}"
 CACHE_DIR="${RUNNER_HOME}/cache"
+RUNNER_IMAGE="${RUNNER_IMAGE:-plasma-runner:latest}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Handle kubeconfig for sudo execution
 if [[ -n "${SUDO_USER:-}" ]]; then
@@ -86,6 +88,29 @@ setup_user() {
     fi
 
     log_info "User setup complete"
+}
+
+build_runner_image() {
+    log_info "Building custom runner image: $RUNNER_IMAGE..."
+
+    local dockerfile="${SCRIPT_DIR}/runner-image/Dockerfile"
+    if [[ ! -f "$dockerfile" ]]; then
+        die "Dockerfile not found: $dockerfile"
+    fi
+
+    if docker images --format '{{.Repository}}:{{.Tag}}' | grep -q "^${RUNNER_IMAGE}$"; then
+        log_info "Runner image $RUNNER_IMAGE already exists, rebuilding..."
+    fi
+
+    docker build -t "$RUNNER_IMAGE" -f "$dockerfile" "${SCRIPT_DIR}/runner-image"
+    log_info "Runner image built: $RUNNER_IMAGE"
+}
+
+import_runner_image() {
+    log_info "Importing runner image into k3d cluster..."
+
+    k3d image import "$RUNNER_IMAGE" -c "$K3D_CLUSTER_NAME"
+    log_info "Runner image imported into k3d cluster"
 }
 
 setup_cache_dirs() {
@@ -520,7 +545,7 @@ deploy_runner_scale_set() {
     fi
 
     # Create values file with DinD config and IfNotPresent pull policy
-    # (Using manual template instead of containerMode.type=dind to control imagePullPolicy)
+    # Uses custom runner image with dev tools (clang, gcc, cmake, etc.)
     local values_file
     values_file=$(mktemp)
     cat > "$values_file" <<EOF
@@ -532,7 +557,7 @@ template:
   spec:
     initContainers:
       - name: init-dind-externals
-        image: ghcr.io/actions/actions-runner:latest
+        image: $RUNNER_IMAGE
         imagePullPolicy: IfNotPresent
         command: ["cp", "-r", "-v", "/home/runner/externals/.", "/home/runner/tmpDir/"]
         volumeMounts:
@@ -540,7 +565,7 @@ template:
             mountPath: /home/runner/tmpDir
     containers:
       - name: runner
-        image: ghcr.io/actions/actions-runner:latest
+        image: $RUNNER_IMAGE
         imagePullPolicy: IfNotPresent
         command: ["/home/runner/run.sh"]
         env:
@@ -627,6 +652,8 @@ Optional config:
   ENABLE_CACHE_PROXY   - Enable caching proxies (default: true)
                          Deploys registry mirror, apt cache, and HTTP proxy
                          Cache persisted at /srv/docker/github-runner/cache
+  RUNNER_IMAGE         - Custom runner Docker image (default: plasma-runner:latest)
+                         Built from runner-image/Dockerfile with clang, gcc, cmake
 EOF
 }
 
@@ -647,8 +674,10 @@ main() {
 
     check_prerequisites
     setup_user
+    build_runner_image
     setup_cache_dirs
     setup_k3d_cluster
+    import_runner_image
     deploy_arc_controller
     deploy_cache_proxies
     create_github_app_secret "$config_file"
@@ -656,6 +685,7 @@ main() {
 
     log_info "Deployment complete!"
     log_info "Use 'runs-on: ${RUNNER_SCALE_SET_NAME:-plasma-runners}' in your workflows"
+    log_info "Runner image: $RUNNER_IMAGE (with clang, gcc, cmake, etc.)"
     if [[ "$ENABLE_CACHE_PROXY" == "true" ]]; then
         log_info "Cache proxies enabled - data persisted at $CACHE_DIR"
     fi
