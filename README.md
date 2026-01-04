@@ -28,7 +28,7 @@ Deploy self-hosted GitHub Actions runners on Kubernetes (k3d) using the official
 2. Set permissions:
    - **Repository permissions**: Actions (Read), Metadata (Read)
    - **Organization permissions**: Self-hosted runners (Read & Write)
-   - For repo-level only: Administration (Read & Write) instead
+   - For repo-level deployments, use Administration (Read & Write) instead of organization permissions
 
 3. Generate and download a private key (PEM file)
 
@@ -40,18 +40,21 @@ Deploy self-hosted GitHub Actions runners on Kubernetes (k3d) using the official
 
 ### Option 2: Personal Access Token (PAT)
 
-1. Create a PAT at `https://github.com/settings/tokens`
+1. Create a classic PAT at `https://github.com/settings/tokens`
 2. Select scopes:
-   - `repo` (for repository runners)
-   - `admin:org` (for organization runners)
+   - `repo` (for repository-level runners)
+   - `admin:org` (for organization-level runners)
 
 ## Configuration
+
+Create your configuration file from the example:
 
 ```bash
 cp config.env.example config.env
 chmod 600 config.env
-# Edit config.env with your values
 ```
+
+Edit `config.env` with your authentication credentials and runner settings. Choose either GitHub App or PAT authentication.
 
 ### GitHub App Configuration
 
@@ -60,7 +63,7 @@ GITHUB_APP_ID=123456
 GITHUB_APP_INSTALLATION_ID=789012
 GITHUB_APP_PRIVATE_KEY_PATH=/path/to/private-key.pem
 GITHUB_ORG=your-org
-GITHUB_REPO=           # Empty for org-level, or specific repo name
+GITHUB_REPO=           # Leave empty for org-level runners, or specify repo name
 ```
 
 ### PAT Configuration
@@ -68,7 +71,7 @@ GITHUB_REPO=           # Empty for org-level, or specific repo name
 ```bash
 GITHUB_PAT=ghp_xxxxxxxxxxxx
 GITHUB_ORG=your-org
-GITHUB_REPO=           # Empty for org-level, or specific repo name
+GITHUB_REPO=           # Leave empty for org-level runners, or specify repo name
 ```
 
 ### Runner Settings
@@ -81,18 +84,48 @@ MAX_RUNNERS=32                       # Maximum concurrent runners
 
 ## Deploy
 
+Run the setup script with your configuration:
+
 ```bash
 sudo ./setup.sh config.env
 ```
 
+The script will:
+- Create a k3d Kubernetes cluster
+- Deploy the Actions Runner Controller
+- Build and push the runner image
+- Configure autoscaling based on your MIN_RUNNERS and MAX_RUNNERS settings
+
+Deployment takes approximately 2-3 minutes. Once complete, runners will appear in your GitHub repository or organization settings under Actions > Runners.
+
+### Verifying Deployment
+
+Check that your runners are registered and ready:
+
+1. Navigate to your GitHub organization or repository settings
+2. Go to Actions > Runners
+3. Look for your RUNNER_SCALE_SET_NAME in the list
+4. The runner should show as idle and ready to accept jobs
+
+You can also verify the Kubernetes deployment:
+```bash
+kubectl --context k3d-arc-cluster -n arc-runners get pods
+kubectl --context k3d-arc-cluster -n arc-runners get scalesets
+```
+
 ## Teardown
+
+Remove all deployed components:
 
 ```bash
 sudo ./teardown.sh
-# Or with options:
-sudo ./teardown.sh --keep-cluster    # Keep k3d, remove only ARC
+```
+
+Available options for partial cleanup:
+```bash
+sudo ./teardown.sh --keep-cluster    # Keep k3d cluster, remove only ARC
 sudo ./teardown.sh --keep-registry   # Keep local Docker registry
-sudo ./teardown.sh --keep-user       # Keep github-runner user
+sudo ./teardown.sh --keep-user       # Keep github-runner user account
 ```
 
 ## Usage in Workflows
@@ -108,39 +141,43 @@ jobs:
 
 ## Multi-Machine Scaling
 
-Deploy on multiple machines to create a distributed runner pool:
+Deploy on multiple machines to create a distributed runner pool. Each machine runs an independent k3d cluster, but all register under the same scale set name.
 
 ```bash
 # On each machine
-git clone https://github.com/your-org/your-runners.git
-cd your-runners
+git clone <this-repository-url>
+cd github-runner-deploy
 cp config.env.example config.env
-# Edit config.env with same credentials
+# Edit config.env with identical credentials and RUNNER_SCALE_SET_NAME
 sudo ./setup.sh config.env
 ```
 
-All machines register under the same runner name. GitHub automatically distributes jobs to any available runner for transparent horizontal scaling.
+All machines register under the same scale set name. GitHub automatically distributes jobs across all available runners, providing transparent horizontal scaling and redundancy.
 
 ## Security Best Practices
 
-- Store `config.env` outside the repository with `chmod 600`
-- Private key files should have `chmod 600` permissions
+- Store `config.env` outside the repository with `chmod 600` permissions
+- Set private key files to `chmod 600` to restrict access
 - Rotate GitHub App private keys periodically
-- Never commit `config.env`, `*.pem`, or `*.key` files (blocked by .gitignore)
-- Prefer GitHub App over PAT (more granular permissions, auditable)
+- Never commit `config.env`, `*.pem`, or `*.key` files to version control
+- Use GitHub App authentication over PAT when possible for more granular permissions and better auditability
+- Review runner logs periodically for suspicious activity
+- Limit runner access to only the repositories that need them
 
 ## Architecture
 
-- **k3d**: Lightweight Kubernetes in Docker
-- **ARC**: Official GitHub Actions Runner Controller
-- **DinD**: Docker-in-Docker for container workflows
-- **Local Registry**: Persistent runner image storage
-- **Ephemeral runners**: Fresh runner pod per job
-- **Autoscaling**: 0 to MAX_RUNNERS based on demand
+This deployment uses the following components:
+
+- **k3d**: Lightweight Kubernetes cluster running in Docker
+- **ARC**: Official GitHub Actions Runner Controller for Kubernetes
+- **DinD**: Docker-in-Docker support for container-based workflows
+- **Local Registry**: Persistent storage for runner container images
+- **Ephemeral runners**: Fresh, isolated runner pod created for each job
+- **Autoscaling**: Dynamic scaling from 0 to MAX_RUNNERS based on workflow demand
 
 ## Customizing the Runner Image
 
-Edit `runner-image/Dockerfile` to add tools your workflows need:
+To add additional tools or dependencies for your workflows, edit `runner-image/Dockerfile`:
 
 ```dockerfile
 RUN apt-get update && apt-get install -y \
@@ -148,12 +185,41 @@ RUN apt-get update && apt-get install -y \
     another-package
 ```
 
-Rebuild and redeploy:
+After modifying the Dockerfile, rebuild and redeploy:
 
 ```bash
 sudo ./teardown.sh --keep-user
 sudo ./setup.sh config.env
 ```
+
+The runner image will be rebuilt with your changes and pushed to the local registry.
+
+## Troubleshooting
+
+### Runners not appearing in GitHub
+
+- Verify your GitHub App or PAT has the correct permissions
+- Check that the private key file path is correct and the file has `chmod 600` permissions
+- Ensure the GitHub App is installed on the target organization or repository
+- Review logs: `kubectl --context k3d-arc-cluster -n arc-runners logs -l app.kubernetes.io/name=gha-runner-scale-set-controller`
+
+### Workflows not using self-hosted runners
+
+- Confirm the `runs-on` value in your workflow matches RUNNER_SCALE_SET_NAME exactly
+- Check that runners show as idle in GitHub settings under Actions > Runners
+- Verify the runner scale set is registered: `kubectl --context k3d-arc-cluster -n arc-runners get scalesets`
+
+### Permission errors during deployment
+
+- Ensure you are running setup.sh with `sudo`
+- Verify Docker is installed and the Docker daemon is running
+- Check that your user can run Docker commands: `docker ps`
+
+### Pods failing to start
+
+- Check pod status: `kubectl --context k3d-arc-cluster -n arc-runners get pods`
+- View pod logs: `kubectl --context k3d-arc-cluster -n arc-runners logs <pod-name>`
+- Ensure sufficient system resources are available (CPU, memory, disk space)
 
 ## License
 
