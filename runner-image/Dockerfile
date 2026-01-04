@@ -4,7 +4,7 @@ USER root
 
 # Install development tools to match GitHub-hosted ubuntu-latest
 # Reference: https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2404-Readme.md
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y \
     # Compilers
     clang \
     clang-format \
@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     automake \
     libtool \
     pkg-config \
+    ccache \
     # Parser generators
     bison \
     flex \
@@ -52,7 +53,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     gnupg \
     lsb-release \
-    && rm -rf /var/lib/apt/lists/*
+    # Node.js for WASM tests
+    nodejs \
+    npm
 
 # Symlink clang/clang++ to versioned names if needed
 RUN update-alternatives --install /usr/bin/cc cc /usr/bin/clang 100 && \
