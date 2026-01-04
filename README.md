@@ -77,7 +77,7 @@ GITHUB_REPO=           # Leave empty for org-level runners, or specify repo name
 ### Runner Settings
 
 ```bash
-RUNNER_SCALE_SET_NAME=my-runners    # Name used in runs-on
+RUNNER_SCALE_SET_NAME=arc-runners   # Name used in runs-on
 MIN_RUNNERS=0                        # Scale to zero when idle
 MAX_RUNNERS=32                       # Maximum concurrent runners
 ```
@@ -133,7 +133,7 @@ sudo ./teardown.sh --keep-user       # Keep github-runner user account
 ```yaml
 jobs:
   build:
-    runs-on: my-runners  # Your RUNNER_SCALE_SET_NAME
+    runs-on: arc-runners  # Your RUNNER_SCALE_SET_NAME
     steps:
       - uses: actions/checkout@v4
       # Your build steps...
