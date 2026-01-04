@@ -196,6 +196,7 @@ deploy_runner_scale_set() {
         --set githubConfigSecret=github-app-secret
         --set minRunners="$min_runners"
         --set maxRunners="$max_runners"
+        --set containerMode.type="dind"
     )
 
     if helm status "$scale_set_name" -n "$ns" >/dev/null 2>&1; then
