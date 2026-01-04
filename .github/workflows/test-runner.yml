@@ -1,0 +1,29 @@
+name: Test Runner
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: plasma-runner
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System info
+        run: |
+          echo "Runner: $RUNNER_NAME"
+          echo "OS: $(uname -a)"
+          hostname
+          whoami
+          pwd
+
+      - name: Test docker
+        run: |
+          docker --version || echo "Docker not available"
+
+      - name: List files
+        run: ls -la
