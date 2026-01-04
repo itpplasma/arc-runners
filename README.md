@@ -73,6 +73,14 @@ sudo ./setup.sh config.env
 
 All machines register under `plasma-runner` - GitHub distributes jobs automatically to any available runner. Fully transparent horizontal scaling.
 
+## Security Best Practices
+
+- Store `config.env` outside the repository with `chmod 600`
+- Private key files should have `chmod 600` permissions
+- Rotate GitHub App private keys periodically
+- Audit GitHub App installation permissions regularly
+- Never commit `config.env`, `*.pem`, or `*.key` files (blocked by .gitignore)
+
 ## Architecture
 
 - **k3d**: Lightweight Kubernetes in Docker

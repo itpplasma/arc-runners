@@ -150,6 +150,13 @@ create_github_app_secret() {
     [[ -n "${GITHUB_APP_PRIVATE_KEY_PATH:-}" ]] || die "GITHUB_APP_PRIVATE_KEY_PATH not set in config"
     [[ -f "$GITHUB_APP_PRIVATE_KEY_PATH" ]] || die "Private key file not found: $GITHUB_APP_PRIVATE_KEY_PATH"
 
+    # Warn if private key has permissive permissions
+    local key_perms
+    key_perms=$(stat -c '%a' "$GITHUB_APP_PRIVATE_KEY_PATH" 2>/dev/null || stat -f '%Lp' "$GITHUB_APP_PRIVATE_KEY_PATH")
+    if [[ ! "$key_perms" =~ ^[0-6]00$ ]]; then
+        log_warn "Private key has permissive permissions: $key_perms (recommend: chmod 600)"
+    fi
+
     kubectl get namespace "$ns" >/dev/null 2>&1 || kubectl create namespace "$ns"
 
     # Delete existing secret if present (idempotent update)
