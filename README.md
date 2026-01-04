@@ -99,8 +99,8 @@ Deploy on multiple machines to create a global runner pool:
 
 ```bash
 # On each machine
-git clone git@github.com:itpplasma/github-runner-deploy.git
-cd github-runner-deploy
+git clone git@github.com:itpplasma/plasma-runners.git
+cd plasma-runners
 cp config.env.example config.env
 # Edit config.env with same GitHub App credentials
 sudo ./setup.sh config.env
