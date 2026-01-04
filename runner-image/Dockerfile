@@ -57,6 +57,13 @@ RUN apt-get update && apt-get install -y \
     nodejs \
     npm
 
+# Install sccache from binary release
+RUN curl -L https://github.com/mozilla/sccache/releases/download/v0.8.2/sccache-v0.8.2-x86_64-unknown-linux-musl.tar.gz | \
+    tar xz -C /tmp && \
+    mv /tmp/sccache-v0.8.2-x86_64-unknown-linux-musl/sccache /usr/local/bin/ && \
+    chmod +x /usr/local/bin/sccache && \
+    rm -rf /tmp/sccache-*
+
 # Symlink clang/clang++ to versioned names if needed
 RUN update-alternatives --install /usr/bin/cc cc /usr/bin/clang 100 && \
     update-alternatives --install /usr/bin/c++ c++ /usr/bin/clang++ 100
