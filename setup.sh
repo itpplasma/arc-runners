@@ -606,7 +606,7 @@ deploy_runner_scale_set() {
 
     # Build proxy environment variables if cache proxy is enabled
     local proxy_env=""
-    local dind_env=""
+    local dind_args="[]"
     if [[ "$ENABLE_CACHE_PROXY" == "true" ]]; then
         proxy_env='
           - name: HTTP_PROXY
@@ -623,9 +623,7 @@ deploy_runner_scale_set() {
             value: "localhost,127.0.0.1,.cluster.local,.svc,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
           - name: APT_PROXY
             value: "http://apt-cache.cache-system.svc.cluster.local:3142"'
-        dind_env='
-          - name: DOCKER_OPTS
-            value: "--registry-mirror=http://registry-mirror.cache-system.svc.cluster.local:5000"'
+        dind_args='["--registry-mirror=http://registry-mirror.cache-system.svc.cluster.local:5000"]'
     fi
 
     # Get the registry image URL for k3d nodes
@@ -668,11 +666,9 @@ template:
       - name: dind
         image: docker:dind
         imagePullPolicy: IfNotPresent
-        args: ["\${DOCKER_OPTS:-}"]
+        args: ${dind_args}
         securityContext:
           privileged: true
-        env:${dind_env:-"
-          []"}
         volumeMounts:
           - name: work
             mountPath: /home/runner/_work
