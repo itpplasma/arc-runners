@@ -12,9 +12,18 @@ K3D_CLUSTER_NAME="${K3D_CLUSTER_NAME:-arc-cluster}"
 # Handle kubeconfig for sudo execution
 if [[ -n "${SUDO_USER:-}" ]]; then
     SUDO_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+    SUDO_UID=$(id -u "$SUDO_USER")
+    SUDO_GID=$(id -g "$SUDO_USER")
     export KUBECONFIG="${KUBECONFIG:-${SUDO_HOME}/.kube/config}"
     mkdir -p "$(dirname "$KUBECONFIG")"
+    chown "$SUDO_UID:$SUDO_GID" "$(dirname "$KUBECONFIG")"
 fi
+
+fix_kubeconfig_perms() {
+    if [[ -n "${SUDO_USER:-}" && -f "$KUBECONFIG" ]]; then
+        chown "$SUDO_UID:$SUDO_GID" "$KUBECONFIG"
+    fi
+}
 
 # Colors for output
 RED='\033[0;31m'
@@ -99,6 +108,7 @@ setup_k3d_cluster() {
     log_info "Waiting for cluster nodes to be ready..."
     kubectl wait --for=condition=Ready nodes --all --timeout=120s
 
+    fix_kubeconfig_perms
     log_info "k3d cluster ready"
 }
 
