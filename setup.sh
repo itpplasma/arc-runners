@@ -7,6 +7,8 @@ set -euo pipefail
 RUNNER_USER="github-runner"
 RUNNER_HOME="/srv/docker/github-runner"
 K3D_CLUSTER_NAME="${K3D_CLUSTER_NAME:-arc-cluster}"
+ENABLE_CACHE_PROXY="${ENABLE_CACHE_PROXY:-true}"
+CACHE_DIR="${RUNNER_HOME}/cache"
 
 # Handle kubeconfig for sudo execution
 if [[ -n "${SUDO_USER:-}" ]]; then
@@ -86,15 +88,311 @@ setup_user() {
     log_info "User setup complete"
 }
 
+setup_cache_dirs() {
+    if [[ "$ENABLE_CACHE_PROXY" != "true" ]]; then
+        return
+    fi
+
+    log_info "Setting up cache directories at $CACHE_DIR..."
+
+    local dirs=("registry" "apt" "squid")
+    for dir in "${dirs[@]}"; do
+        if [[ ! -d "${CACHE_DIR}/${dir}" ]]; then
+            sudo mkdir -p "${CACHE_DIR}/${dir}"
+            log_info "Created ${CACHE_DIR}/${dir}"
+        fi
+    done
+
+    sudo chown -R "$RUNNER_USER:$RUNNER_USER" "$CACHE_DIR"
+    sudo chmod -R 777 "$CACHE_DIR"
+    log_info "Cache directories ready"
+}
+
+deploy_cache_proxies() {
+    if [[ "$ENABLE_CACHE_PROXY" != "true" ]]; then
+        log_info "Cache proxy disabled, skipping"
+        return
+    fi
+
+    log_info "Deploying cache proxies..."
+
+    local ns="cache-system"
+    kubectl get namespace "$ns" >/dev/null 2>&1 || kubectl create namespace "$ns"
+
+    # Deploy PVs (hostPath pointing to k3d-mounted dirs), PVCs, and services
+    kubectl apply -n "$ns" -f - <<'EOF'
+---
+# PersistentVolumes using hostPath (mapped from host via k3d volume mount)
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: registry-cache-pv
+spec:
+  capacity:
+    storage: 50Gi
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: cache-storage
+  hostPath:
+    path: /cache/registry
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: apt-cache-pv
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: cache-storage
+  hostPath:
+    path: /cache/apt
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: squid-cache-pv
+spec:
+  capacity:
+    storage: 30Gi
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: cache-storage
+  hostPath:
+    path: /cache/squid
+    type: DirectoryOrCreate
+---
+# PersistentVolumeClaims
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: registry-cache-pvc
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: cache-storage
+  volumeName: registry-cache-pv
+  resources:
+    requests:
+      storage: 50Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: apt-cache-pvc
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: cache-storage
+  volumeName: apt-cache-pv
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: squid-cache-pvc
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: cache-storage
+  volumeName: squid-cache-pv
+  resources:
+    requests:
+      storage: 30Gi
+---
+# Registry mirror deployment (pull-through cache for Docker Hub)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry-mirror
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: registry-mirror
+  template:
+    metadata:
+      labels:
+        app: registry-mirror
+    spec:
+      containers:
+        - name: registry
+          image: registry:2
+          ports:
+            - containerPort: 5000
+          env:
+            - name: REGISTRY_PROXY_REMOTEURL
+              value: "https://registry-1.docker.io"
+            - name: REGISTRY_STORAGE_DELETE_ENABLED
+              value: "true"
+          volumeMounts:
+            - name: cache
+              mountPath: /var/lib/registry
+      volumes:
+        - name: cache
+          persistentVolumeClaim:
+            claimName: registry-cache-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry-mirror
+spec:
+  selector:
+    app: registry-mirror
+  ports:
+    - port: 5000
+      targetPort: 5000
+---
+# APT cache (apt-cacher-ng)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: apt-cache
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: apt-cache
+  template:
+    metadata:
+      labels:
+        app: apt-cache
+    spec:
+      containers:
+        - name: apt-cacher-ng
+          image: sameersbn/apt-cacher-ng:3.7.4-20220421
+          ports:
+            - containerPort: 3142
+          volumeMounts:
+            - name: cache
+              mountPath: /var/cache/apt-cacher-ng
+      volumes:
+        - name: cache
+          persistentVolumeClaim:
+            claimName: apt-cache-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: apt-cache
+spec:
+  selector:
+    app: apt-cache
+  ports:
+    - port: 3142
+      targetPort: 3142
+---
+# Squid HTTP cache proxy
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: squid-config
+data:
+  squid.conf: |
+    acl localnet src 10.0.0.0/8
+    acl localnet src 172.16.0.0/12
+    acl localnet src 192.168.0.0/16
+    acl SSL_ports port 443
+    acl Safe_ports port 80
+    acl Safe_ports port 443
+    acl Safe_ports port 1025-65535
+    acl CONNECT method CONNECT
+    http_access deny !Safe_ports
+    http_access deny CONNECT !SSL_ports
+    http_access allow localnet
+    http_access allow localhost
+    http_access deny all
+    http_port 3128
+    cache_dir ufs /var/spool/squid 20000 16 256
+    maximum_object_size 1 GB
+    cache_mem 512 MB
+    refresh_pattern -i \.tar\.     10080 90% 43200 override-expire
+    refresh_pattern -i \.tar\.gz$  10080 90% 43200 override-expire
+    refresh_pattern -i \.tar\.bz2$ 10080 90% 43200 override-expire
+    refresh_pattern -i \.tar\.xz$  10080 90% 43200 override-expire
+    refresh_pattern -i \.deb$      10080 90% 43200 override-expire
+    refresh_pattern -i \.rpm$      10080 90% 43200 override-expire
+    refresh_pattern -i \.whl$      10080 90% 43200 override-expire
+    refresh_pattern .              0     20%  4320
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: squid-cache
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: squid-cache
+  template:
+    metadata:
+      labels:
+        app: squid-cache
+    spec:
+      initContainers:
+        - name: init-cache
+          image: ubuntu/squid:latest
+          command: ["/bin/sh", "-c", "chown -R proxy:proxy /var/spool/squid"]
+          volumeMounts:
+            - name: cache
+              mountPath: /var/spool/squid
+      containers:
+        - name: squid
+          image: ubuntu/squid:latest
+          ports:
+            - containerPort: 3128
+          volumeMounts:
+            - name: cache
+              mountPath: /var/spool/squid
+            - name: config
+              mountPath: /etc/squid/squid.conf
+              subPath: squid.conf
+      volumes:
+        - name: cache
+          persistentVolumeClaim:
+            claimName: squid-cache-pvc
+        - name: config
+          configMap:
+            name: squid-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: squid-cache
+spec:
+  selector:
+    app: squid-cache
+  ports:
+    - port: 3128
+      targetPort: 3128
+EOF
+
+    log_info "Waiting for cache proxies to be ready..."
+    kubectl rollout status deployment/registry-mirror -n "$ns" --timeout=120s
+    kubectl rollout status deployment/apt-cache -n "$ns" --timeout=120s
+    kubectl rollout status deployment/squid-cache -n "$ns" --timeout=120s
+
+    log_info "Cache proxies deployed in namespace $ns"
+}
+
 setup_k3d_cluster() {
     log_info "Setting up k3d cluster: $K3D_CLUSTER_NAME..."
 
     if k3d cluster list 2>/dev/null | grep -q "^${K3D_CLUSTER_NAME} "; then
         log_info "Cluster $K3D_CLUSTER_NAME already exists"
     else
+        local volume_args=()
+        if [[ "$ENABLE_CACHE_PROXY" == "true" ]]; then
+            volume_args=(--volume "${CACHE_DIR}:/cache@all")
+        fi
+
         k3d cluster create "$K3D_CLUSTER_NAME" \
             --agents 2 \
             --k3s-arg "--disable=traefik@server:0" \
+            "${volume_args[@]}" \
             --wait
         log_info "Created k3d cluster $K3D_CLUSTER_NAME"
     fi
@@ -197,6 +495,30 @@ deploy_runner_scale_set() {
 
     kubectl get namespace "$ns" >/dev/null 2>&1 || kubectl create namespace "$ns"
 
+    # Build proxy environment variables if cache proxy is enabled
+    local proxy_env=""
+    local dind_env=""
+    if [[ "$ENABLE_CACHE_PROXY" == "true" ]]; then
+        proxy_env='
+          - name: HTTP_PROXY
+            value: "http://squid-cache.cache-system.svc.cluster.local:3128"
+          - name: HTTPS_PROXY
+            value: "http://squid-cache.cache-system.svc.cluster.local:3128"
+          - name: http_proxy
+            value: "http://squid-cache.cache-system.svc.cluster.local:3128"
+          - name: https_proxy
+            value: "http://squid-cache.cache-system.svc.cluster.local:3128"
+          - name: NO_PROXY
+            value: "localhost,127.0.0.1,.cluster.local,.svc,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+          - name: no_proxy
+            value: "localhost,127.0.0.1,.cluster.local,.svc,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+          - name: APT_PROXY
+            value: "http://apt-cache.cache-system.svc.cluster.local:3142"'
+        dind_env='
+          - name: DOCKER_OPTS
+            value: "--registry-mirror=http://registry-mirror.cache-system.svc.cluster.local:5000"'
+    fi
+
     # Create values file with DinD config and IfNotPresent pull policy
     # (Using manual template instead of containerMode.type=dind to control imagePullPolicy)
     local values_file
@@ -223,7 +545,7 @@ template:
         command: ["/home/runner/run.sh"]
         env:
           - name: DOCKER_HOST
-            value: unix:///var/run/docker.sock
+            value: unix:///var/run/docker.sock${proxy_env}
         volumeMounts:
           - name: work
             mountPath: /home/runner/_work
@@ -232,8 +554,11 @@ template:
       - name: dind
         image: docker:dind
         imagePullPolicy: IfNotPresent
+        args: ["\${DOCKER_OPTS:-}"]
         securityContext:
           privileged: true
+        env:${dind_env:-"
+          []"}
         volumeMounts:
           - name: work
             mountPath: /home/runner/_work
@@ -299,6 +624,9 @@ Optional config:
   MIN_RUNNERS          - Minimum runners (default: 0)
   MAX_RUNNERS          - Maximum runners (default: 5)
   K3D_CLUSTER_NAME     - k3d cluster name (default: arc-cluster)
+  ENABLE_CACHE_PROXY   - Enable caching proxies (default: true)
+                         Deploys registry mirror, apt cache, and HTTP proxy
+                         Cache persisted at /srv/docker/github-runner/cache
 EOF
 }
 
@@ -311,20 +639,26 @@ main() {
     local config_file="$1"
     [[ -f "$config_file" ]] || die "Config file not found: $config_file"
 
-    # Load config for K3D_CLUSTER_NAME if set
+    # Load config
     # shellcheck source=/dev/null
     source "$config_file"
     K3D_CLUSTER_NAME="${K3D_CLUSTER_NAME:-arc-cluster}"
+    ENABLE_CACHE_PROXY="${ENABLE_CACHE_PROXY:-true}"
 
     check_prerequisites
     setup_user
+    setup_cache_dirs
     setup_k3d_cluster
     deploy_arc_controller
+    deploy_cache_proxies
     create_github_app_secret "$config_file"
     deploy_runner_scale_set "$config_file"
 
     log_info "Deployment complete!"
     log_info "Use 'runs-on: ${RUNNER_SCALE_SET_NAME:-plasma-runners}' in your workflows"
+    if [[ "$ENABLE_CACHE_PROXY" == "true" ]]; then
+        log_info "Cache proxies enabled - data persisted at $CACHE_DIR"
+    fi
 }
 
 main "$@"

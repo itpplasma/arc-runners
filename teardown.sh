@@ -73,6 +73,27 @@ remove_arc_controller() {
     log_info "ARC controller removed"
 }
 
+remove_cache_proxies() {
+    log_info "Removing cache proxies..."
+
+    if ! command -v kubectl >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if ! kubectl cluster-info >/dev/null 2>&1; then
+        return 0
+    fi
+
+    local ns="cache-system"
+    kubectl delete namespace "$ns" --ignore-not-found=true 2>/dev/null || true
+
+    # Clean up cluster-scoped PVs
+    kubectl delete pv registry-cache-pv apt-cache-pv squid-cache-pv \
+        --ignore-not-found=true 2>/dev/null || true
+
+    log_info "Cache proxies removed (cache data on host preserved)"
+}
+
 remove_k3d_cluster() {
     log_info "Removing k3d cluster: $K3D_CLUSTER_NAME..."
 
@@ -172,6 +193,7 @@ main() {
     log_info "Starting teardown..."
 
     remove_runner_scale_sets
+    remove_cache_proxies
     remove_arc_controller
 
     if [[ "$keep_cluster" == "false" ]]; then
