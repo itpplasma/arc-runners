@@ -58,9 +58,25 @@ jobs:
       # ...
 ```
 
+## Multi-Machine Scaling
+
+Deploy on multiple machines to create a global runner pool:
+
+```bash
+# On each machine
+git clone git@github.com:itpplasma/github-runner-deploy.git
+cd github-runner-deploy
+cp config.env.example config.env
+# Edit config.env with same GitHub App credentials
+sudo ./setup.sh config.env
+```
+
+All machines register under `plasma-runner` - GitHub distributes jobs automatically to any available runner. Fully transparent horizontal scaling.
+
 ## Architecture
 
 - **k3d**: Lightweight Kubernetes in Docker
 - **ARC**: Official GitHub Actions Runner Controller
+- **DinD**: Docker-in-Docker enabled for container workflows
 - **Ephemeral runners**: Each job gets a fresh runner pod
-- **Autoscaling**: 0 to MAX_RUNNERS based on workflow demand
+- **Autoscaling**: 0 to MAX_RUNNERS per machine based on workflow demand
