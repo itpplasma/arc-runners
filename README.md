@@ -87,7 +87,7 @@ sudo ./teardown.sh --keep-user     # Keep github-runner user
 ```yaml
 jobs:
   build:
-    runs-on: plasma-runner  # or your RUNNER_SCALE_SET_NAME
+    runs-on: plasma-runners  # or your RUNNER_SCALE_SET_NAME
     steps:
       - uses: actions/checkout@v4
       # ...
@@ -106,7 +106,7 @@ cp config.env.example config.env
 sudo ./setup.sh config.env
 ```
 
-All machines register under `plasma-runner` - GitHub distributes jobs automatically to any available runner. Fully transparent horizontal scaling.
+All machines register under `plasma-runners` - GitHub distributes jobs automatically to any available runner. Fully transparent horizontal scaling.
 
 ## Security Best Practices
 

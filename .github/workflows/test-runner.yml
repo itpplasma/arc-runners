@@ -9,7 +9,7 @@ on:
 
 jobs:
   lint:
-    runs-on: plasma-runner
+    runs-on: plasma-runners
     steps:
       - uses: actions/checkout@v4
 
@@ -31,7 +31,7 @@ jobs:
           test -x teardown.sh || exit 1
 
   unit-tests:
-    runs-on: plasma-runner
+    runs-on: plasma-runners
     steps:
       - uses: actions/checkout@v4
 
@@ -63,7 +63,7 @@ jobs:
           fi
 
   integration-test:
-    runs-on: plasma-runner
+    runs-on: plasma-runners
     steps:
       - uses: actions/checkout@v4
 
@@ -174,7 +174,7 @@ jobs:
           echo "Idempotent re-teardown OK"
 
   summary:
-    runs-on: plasma-runner
+    runs-on: plasma-runners
     needs: [lint, unit-tests, integration-test]
     steps:
       - name: All tests passed

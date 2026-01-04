@@ -180,7 +180,7 @@ deploy_runner_scale_set() {
     source "$config_file"
 
     local ns="${RUNNER_NAMESPACE:-arc-runners}"
-    local scale_set_name="${RUNNER_SCALE_SET_NAME:-plasma-runner}"
+    local scale_set_name="${RUNNER_SCALE_SET_NAME:-plasma-runners}"
     local github_org="${GITHUB_ORG:-}"
     local github_repo="${GITHUB_REPO:-}"
     local min_runners="${MIN_RUNNERS:-0}"
@@ -245,7 +245,7 @@ The config file must contain:
 Optional config:
   GITHUB_REPO          - Repository name (omit for org-level runners)
   RUNNER_NAMESPACE     - Kubernetes namespace (default: arc-runners)
-  RUNNER_SCALE_SET_NAME - Scale set name (default: plasma-runner)
+  RUNNER_SCALE_SET_NAME - Scale set name (default: plasma-runners)
   MIN_RUNNERS          - Minimum runners (default: 0)
   MAX_RUNNERS          - Maximum runners (default: 5)
   K3D_CLUSTER_NAME     - k3d cluster name (default: arc-cluster)
@@ -274,7 +274,7 @@ main() {
     deploy_runner_scale_set "$config_file"
 
     log_info "Deployment complete!"
-    log_info "Use 'runs-on: ${RUNNER_SCALE_SET_NAME:-plasma-runner}' in your workflows"
+    log_info "Use 'runs-on: ${RUNNER_SCALE_SET_NAME:-plasma-runners}' in your workflows"
 }
 
 main "$@"
