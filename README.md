@@ -30,7 +30,42 @@ Required settings:
 - `GITHUB_APP_ID` - Your GitHub App ID
 - `GITHUB_APP_INSTALLATION_ID` - Installation ID (found in app settings after install)
 - `GITHUB_APP_PRIVATE_KEY_PATH` - Path to the downloaded PEM file
-- `GITHUB_ORG` - Your GitHub organization name
+- `GITHUB_ORG` - Your GitHub organization or username
+
+### Organization Level (recommended)
+
+Runners available to all repos in the organization:
+
+```bash
+GITHUB_ORG=itpplasma
+GITHUB_REPO=
+```
+
+GitHub App permissions needed:
+- **Organization permissions**: Self-hosted runners (Read & Write)
+
+### Repository Level
+
+Runners available to a single repository only:
+
+```bash
+GITHUB_ORG=itpplasma
+GITHUB_REPO=myrepo
+```
+
+GitHub App permissions needed:
+- **Repository permissions**: Administration (Read & Write)
+
+### Personal Account (User Level)
+
+For personal GitHub accounts (not organizations):
+
+```bash
+GITHUB_ORG=yourusername
+GITHUB_REPO=yourrepo
+```
+
+Note: Personal accounts require repository-level setup (specify `GITHUB_REPO`). Create the GitHub App under your personal account settings at Settings > Developer settings > GitHub Apps.
 
 ## Deploy
 
