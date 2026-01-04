@@ -52,7 +52,7 @@ sudo ./teardown.sh --keep-user     # Keep github-runner user
 ```yaml
 jobs:
   build:
-    runs-on: k3d-runner  # or your RUNNER_SCALE_SET_NAME
+    runs-on: plasma-runner  # or your RUNNER_SCALE_SET_NAME
     steps:
       - uses: actions/checkout@v4
       # ...
