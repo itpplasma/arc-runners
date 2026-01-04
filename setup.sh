@@ -197,13 +197,62 @@ deploy_runner_scale_set() {
 
     kubectl get namespace "$ns" >/dev/null 2>&1 || kubectl create namespace "$ns"
 
+    # Create values file with DinD config and IfNotPresent pull policy
+    # (Using manual template instead of containerMode.type=dind to control imagePullPolicy)
+    local values_file
+    values_file=$(mktemp)
+    cat > "$values_file" <<EOF
+githubConfigUrl: "$github_config_url"
+githubConfigSecret: github-app-secret
+minRunners: $min_runners
+maxRunners: $max_runners
+template:
+  spec:
+    initContainers:
+      - name: init-dind-externals
+        image: ghcr.io/actions/actions-runner:latest
+        imagePullPolicy: IfNotPresent
+        command: ["cp", "-r", "-v", "/home/runner/externals/.", "/home/runner/tmpDir/"]
+        volumeMounts:
+          - name: dind-externals
+            mountPath: /home/runner/tmpDir
+    containers:
+      - name: runner
+        image: ghcr.io/actions/actions-runner:latest
+        imagePullPolicy: IfNotPresent
+        command: ["/home/runner/run.sh"]
+        env:
+          - name: DOCKER_HOST
+            value: unix:///var/run/docker.sock
+        volumeMounts:
+          - name: work
+            mountPath: /home/runner/_work
+          - name: dind-sock
+            mountPath: /var/run
+      - name: dind
+        image: docker:dind
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          privileged: true
+        volumeMounts:
+          - name: work
+            mountPath: /home/runner/_work
+          - name: dind-sock
+            mountPath: /var/run
+          - name: dind-externals
+            mountPath: /home/runner/externals
+    volumes:
+      - name: work
+        emptyDir: {}
+      - name: dind-sock
+        emptyDir: {}
+      - name: dind-externals
+        emptyDir: {}
+EOF
+
     local helm_args=(
         --namespace "$ns"
-        --set githubConfigUrl="$github_config_url"
-        --set githubConfigSecret=github-app-secret
-        --set minRunners="$min_runners"
-        --set maxRunners="$max_runners"
-        --set containerMode.type="dind"
+        -f "$values_file"
     )
 
     if helm status "$scale_set_name" -n "$ns" >/dev/null 2>&1; then
@@ -220,6 +269,7 @@ deploy_runner_scale_set() {
             --wait
     fi
 
+    rm -f "$values_file"
     log_info "Runner scale set '$scale_set_name' deployed"
     log_info "Runners will register at: $github_config_url"
 }
