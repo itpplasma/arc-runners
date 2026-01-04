@@ -8,6 +8,8 @@ RUNNER_USER="github-runner"
 RUNNER_HOME="/srv/docker/github-runner"
 K3D_CLUSTER_NAME="${K3D_CLUSTER_NAME:-arc-cluster}"
 REGISTRY_NAME="k3d-runner-registry"
+RUNNER_IMAGE="plasma-runner:latest"
+CACHE_BASE_DIR="/var/cache/github-runner"
 
 # Handle kubeconfig for sudo execution
 if [[ -n "${SUDO_USER:-}" ]]; then
@@ -114,17 +116,44 @@ remove_k3d_cluster() {
 }
 
 remove_registry() {
-    log_info "Removing local Docker registry..."
+    log_info "Removing local Docker registries..."
 
-    if docker ps -a --format '{{.Names}}' | grep -q "^${REGISTRY_NAME}$"; then
-        docker stop "$REGISTRY_NAME" 2>/dev/null || true
-        docker rm "$REGISTRY_NAME" 2>/dev/null || true
-        log_info "Removed registry container $REGISTRY_NAME"
-    else
-        log_info "Registry $REGISTRY_NAME does not exist"
-    fi
+    # Remove all registry containers (handles different naming conventions)
+    for registry in "$REGISTRY_NAME" "k3d-registry" "runner-registry"; do
+        if docker ps -a --format '{{.Names}}' | grep -q "^${registry}$"; then
+            docker stop "$registry" 2>/dev/null || true
+            docker rm "$registry" 2>/dev/null || true
+            log_info "Removed registry container $registry"
+        fi
+    done
 
     log_info "Registry cleanup complete"
+}
+
+remove_docker_images() {
+    log_info "Removing Docker images..."
+
+    # Remove runner images
+    docker rmi "$RUNNER_IMAGE" 2>/dev/null || true
+    docker rmi "localhost:5050/$RUNNER_IMAGE" 2>/dev/null || true
+
+    # Remove any dangling images
+    docker image prune -f 2>/dev/null || true
+
+    log_info "Docker images cleaned up"
+}
+
+remove_cache_dirs() {
+    log_info "Removing cache directories..."
+
+    if [[ -d "$CACHE_BASE_DIR" ]]; then
+        sudo rm -rf "$CACHE_BASE_DIR"
+        log_info "Removed cache directory $CACHE_BASE_DIR"
+    else
+        log_info "Cache directory $CACHE_BASE_DIR does not exist"
+    fi
+
+    log_info "Cache directories cleaned up"
 }
 
 remove_user() {
@@ -226,6 +255,8 @@ main() {
 
     if [[ "$keep_registry" == "false" ]]; then
         remove_registry
+        remove_docker_images
+        remove_cache_dirs
     else
         log_info "Keeping registry $REGISTRY_NAME as requested"
     fi
