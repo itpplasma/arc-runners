@@ -7,6 +7,7 @@ set -euo pipefail
 RUNNER_USER="github-runner"
 RUNNER_HOME="/srv/docker/github-runner"
 K3D_CLUSTER_NAME="${K3D_CLUSTER_NAME:-arc-cluster}"
+REGISTRY_NAME="k3d-runner-registry"
 
 # Handle kubeconfig for sudo execution
 if [[ -n "${SUDO_USER:-}" ]]; then
@@ -112,6 +113,20 @@ remove_k3d_cluster() {
     log_info "k3d cluster removed"
 }
 
+remove_registry() {
+    log_info "Removing local Docker registry..."
+
+    if docker ps -a --format '{{.Names}}' | grep -q "^${REGISTRY_NAME}$"; then
+        docker stop "$REGISTRY_NAME" 2>/dev/null || true
+        docker rm "$REGISTRY_NAME" 2>/dev/null || true
+        log_info "Removed registry container $REGISTRY_NAME"
+    else
+        log_info "Registry $REGISTRY_NAME does not exist"
+    fi
+
+    log_info "Registry cleanup complete"
+}
+
 remove_user() {
     log_info "Removing $RUNNER_USER user and home directory..."
 
@@ -143,12 +158,14 @@ Tears down GitHub Actions self-hosted runners on k3d/Kubernetes.
 Options:
   --keep-user       Do not remove the $RUNNER_USER user and home directory
   --keep-cluster    Do not remove the k3d cluster (only remove ARC)
+  --keep-registry   Do not remove the local Docker registry
   --config FILE     Load K3D_CLUSTER_NAME from config file
   -h, --help        Show this help message
 
 Examples:
   sudo $0                           # Full teardown
   sudo $0 --keep-cluster            # Remove ARC but keep k3d cluster
+  sudo $0 --keep-registry           # Keep registry for faster redeploy
   sudo $0 --config /path/to/config.env
 EOF
 }
@@ -156,6 +173,7 @@ EOF
 main() {
     local keep_user=false
     local keep_cluster=false
+    local keep_registry=false
     local config_file=""
 
     while [[ $# -gt 0 ]]; do
@@ -166,6 +184,10 @@ main() {
                 ;;
             --keep-cluster)
                 keep_cluster=true
+                shift
+                ;;
+            --keep-registry)
+                keep_registry=true
                 shift
                 ;;
             --config)
@@ -200,6 +222,12 @@ main() {
         remove_k3d_cluster
     else
         log_info "Keeping k3d cluster as requested"
+    fi
+
+    if [[ "$keep_registry" == "false" ]]; then
+        remove_registry
+    else
+        log_info "Keeping registry $REGISTRY_NAME as requested"
     fi
 
     if [[ "$keep_user" == "false" ]]; then

@@ -12,6 +12,10 @@ CACHE_DIR="${RUNNER_HOME}/cache"
 RUNNER_IMAGE="${RUNNER_IMAGE:-plasma-runner:latest}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Local registry for runner images (persists across k3d restarts)
+REGISTRY_NAME="k3d-runner-registry"
+REGISTRY_PORT="5050"
+
 # Handle kubeconfig for sudo execution
 if [[ -n "${SUDO_USER:-}" ]]; then
     SUDO_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
@@ -90,6 +94,77 @@ setup_user() {
     log_info "User setup complete"
 }
 
+setup_local_registry() {
+    log_info "Setting up local Docker registry for runner images..."
+
+    # Check if registry container exists
+    if docker ps -a --format '{{.Names}}' | grep -q "^${REGISTRY_NAME}$"; then
+        if docker ps --format '{{.Names}}' | grep -q "^${REGISTRY_NAME}$"; then
+            log_info "Registry $REGISTRY_NAME already running"
+        else
+            log_info "Starting existing registry $REGISTRY_NAME..."
+            docker start "$REGISTRY_NAME"
+        fi
+    else
+        log_info "Creating registry $REGISTRY_NAME on port $REGISTRY_PORT..."
+        docker run -d \
+            --restart=always \
+            --name "$REGISTRY_NAME" \
+            -p "${REGISTRY_PORT}:5000" \
+            registry:2
+    fi
+
+    log_info "Local registry ready at localhost:${REGISTRY_PORT}"
+}
+
+connect_registry_to_k3d() {
+    log_info "Connecting registry to k3d network..."
+
+    local k3d_network="k3d-${K3D_CLUSTER_NAME}"
+
+    # Connect registry to k3d network if not already connected
+    if ! docker inspect "$REGISTRY_NAME" --format '{{json .NetworkSettings.Networks}}' | grep -q "$k3d_network"; then
+        docker network connect "$k3d_network" "$REGISTRY_NAME" 2>/dev/null || true
+        log_info "Connected registry to $k3d_network"
+    else
+        log_info "Registry already connected to $k3d_network"
+    fi
+
+    # Get registry IP on k3d network
+    REGISTRY_IP=$(docker inspect "$REGISTRY_NAME" --format "{{(index .NetworkSettings.Networks \"$k3d_network\").IPAddress}}")
+    log_info "Registry IP on k3d network: $REGISTRY_IP"
+}
+
+configure_k3d_insecure_registry() {
+    log_info "Configuring k3d nodes to trust insecure registry..."
+
+    local registry_url="${REGISTRY_IP}:5000"
+
+    # Configure each k3d node to use HTTP for the registry
+    for node in $(docker ps --filter "name=k3d-${K3D_CLUSTER_NAME}" --format '{{.Names}}'); do
+        docker exec "$node" sh -c "mkdir -p /etc/rancher/k3s && cat > /etc/rancher/k3s/registries.yaml << EOF
+mirrors:
+  \"${registry_url}\":
+    endpoint:
+      - \"http://${registry_url}\"
+EOF
+" 2>/dev/null || true
+    done
+
+    # Restart k3d nodes to pick up registry config
+    log_info "Restarting k3d nodes to apply registry configuration..."
+    for node in $(docker ps --filter "name=k3d-${K3D_CLUSTER_NAME}" --format '{{.Names}}'); do
+        docker restart "$node" >/dev/null 2>&1 &
+    done
+    wait
+
+    # Wait for nodes to be ready again
+    sleep 10
+    kubectl wait --for=condition=Ready nodes --all --timeout=120s
+
+    log_info "k3d nodes configured for insecure registry at $registry_url"
+}
+
 build_runner_image() {
     log_info "Building custom runner image: $RUNNER_IMAGE..."
 
@@ -106,11 +181,20 @@ build_runner_image() {
     log_info "Runner image built: $RUNNER_IMAGE"
 }
 
-import_runner_image() {
-    log_info "Importing runner image into k3d cluster..."
+push_runner_image_to_registry() {
+    log_info "Pushing runner image to local registry..."
 
-    k3d image import "$RUNNER_IMAGE" -c "$K3D_CLUSTER_NAME"
-    log_info "Runner image imported into k3d cluster"
+    # Tag and push to local registry
+    local registry_image="localhost:${REGISTRY_PORT}/${RUNNER_IMAGE}"
+    docker tag "$RUNNER_IMAGE" "$registry_image"
+    docker push "$registry_image"
+
+    log_info "Runner image pushed to $registry_image"
+}
+
+get_registry_image_url() {
+    # Returns the image URL that k3d nodes should use (registry IP, not localhost)
+    echo "${REGISTRY_IP}:5000/${RUNNER_IMAGE}"
 }
 
 setup_cache_dirs() {
@@ -544,6 +628,11 @@ deploy_runner_scale_set() {
             value: "--registry-mirror=http://registry-mirror.cache-system.svc.cluster.local:5000"'
     fi
 
+    # Get the registry image URL for k3d nodes
+    local registry_image
+    registry_image=$(get_registry_image_url)
+    log_info "Using runner image from registry: $registry_image"
+
     # Create values file with DinD config and IfNotPresent pull policy
     # Uses custom runner image with dev tools (clang, gcc, cmake, etc.)
     local values_file
@@ -557,7 +646,7 @@ template:
   spec:
     initContainers:
       - name: init-dind-externals
-        image: $RUNNER_IMAGE
+        image: $registry_image
         imagePullPolicy: IfNotPresent
         command: ["cp", "-r", "-v", "/home/runner/externals/.", "/home/runner/tmpDir/"]
         volumeMounts:
@@ -565,7 +654,7 @@ template:
             mountPath: /home/runner/tmpDir
     containers:
       - name: runner
-        image: $RUNNER_IMAGE
+        image: $registry_image
         imagePullPolicy: IfNotPresent
         command: ["/home/runner/run.sh"]
         env:
@@ -674,10 +763,13 @@ main() {
 
     check_prerequisites
     setup_user
+    setup_local_registry
     build_runner_image
+    push_runner_image_to_registry
     setup_cache_dirs
     setup_k3d_cluster
-    import_runner_image
+    connect_registry_to_k3d
+    configure_k3d_insecure_registry
     deploy_arc_controller
     deploy_cache_proxies
     create_github_app_secret "$config_file"
@@ -685,7 +777,8 @@ main() {
 
     log_info "Deployment complete!"
     log_info "Use 'runs-on: ${RUNNER_SCALE_SET_NAME:-plasma-runners}' in your workflows"
-    log_info "Runner image: $RUNNER_IMAGE (with clang, gcc, cmake, etc.)"
+    log_info "Runner image: $RUNNER_IMAGE (served from local registry at $REGISTRY_NAME)"
+    log_info "Registry ensures images persist across k3d restarts"
     if [[ "$ENABLE_CACHE_PROXY" == "true" ]]; then
         log_info "Cache proxies enabled - data persisted at $CACHE_DIR"
     fi
