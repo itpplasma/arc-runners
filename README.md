@@ -1,5 +1,26 @@
 # GitHub Actions Self-Hosted Runner Deployment
 
+## TL;DR for Users
+
+To run your GitHub Actions workflows on our self-hosted runners, use:
+
+```yaml
+jobs:
+  build:
+    runs-on: arc-runners  # instead of ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # ... your steps
+```
+
+That's it! The runners are Ubuntu 24.04 based with clang, gcc, gfortran (12/13/14), cmake, ninja, nodejs, and npm pre-installed.
+
+---
+
+## Sysadmin Setup Guide
+
+*Everything below is for administrators setting up the runner infrastructure.*
+
 Deploy self-hosted GitHub Actions runners on Kubernetes (k3d) using the official Actions Runner Controller (ARC).
 
 ## Features
